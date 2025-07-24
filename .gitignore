@@ -1,3 +1,5 @@
 reference/
 
 .venv/
+
+data/raw/*
