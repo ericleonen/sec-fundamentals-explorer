@@ -37,7 +37,7 @@ def download_and_unzip(url: str, extract_to: str):
     zip_file.extractall(path=extract_to)
     zip_file.close()
 
-def download_financial_statement_data(
+def download_raw_financial_statement_data(
         download_to: str,
         start_year: int = 2009,
         end_year: int | None = None
@@ -87,7 +87,7 @@ def download_financial_statement_data(
                 print(f" - {dirname} already in directory.")
 
 if __name__ == "__main__":
-    download_financial_statement_data(
+    download_raw_financial_statement_data(
         download_to="data/raw",
         start_year=2009
     )
