@@ -3,3 +3,5 @@ reference/
 .venv/
 
 data/raw/*
+
+notebooks/
