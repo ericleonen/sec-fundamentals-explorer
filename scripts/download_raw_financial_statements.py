@@ -8,6 +8,7 @@ import zipfile
 from io import BytesIO
 from datetime import datetime
 import os
+from requests.exceptions import HTTPError
 
 def download_and_unzip(url: str, extract_to: str):
     """
@@ -83,11 +84,15 @@ def download_raw_financial_statement_data(
             if not os.path.isdir(f"{download_to}/{dirname}"):
                 print(f" - Downloading {dirname}.")
 
-                download_and_unzip(
-                    url=f"https://www.sec.gov/files/dera/data/financial-statement-data-sets/{year}"
-                        f"q{quarter}.zip",
-                    extract_to=f"{download_to}/{dirname}"
-                )
+                try:
+                    download_and_unzip(
+                        url=f"https://www.sec.gov/files/dera/data/financial-statement-data-sets/{year}"
+                            f"q{quarter}.zip",
+                        extract_to=f"{download_to}/{dirname}"
+                    )
+                except HTTPError as err:
+                    print(f"   > Error finding {year}q{quarter}.zip")
+                    continue
             else:
                 print(f" - {dirname} already in directory.")
 

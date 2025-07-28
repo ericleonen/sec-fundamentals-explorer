@@ -2,16 +2,17 @@
 Script that preprocesses financial statement data from data/raw into a Parquet files.
 """
 
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import SparkSession, DataFrame, Window
 import os
 from functools import reduce
-from pyspark.sql.functions import col, to_date
+from pyspark.sql.functions import col, to_date, row_number
 from pyspark.sql.types import DecimalType, LongType
+import shutil
 
-def preprocess_financial_statements(source: str, save_to: str) -> DataFrame:
+def preprocess_financial_statements(source: str, save_to: str):
     """
-    Preprocesses all num.txt and sub.txt from the given source directory into Parquets. Columns
-    are cik, name, tag, ddate, and value.
+    Preprocesses all num.txt and sub.txt from the given source directory into a flat CSV\. Columns
+    are cik, tag, ddate, and value.
 
     Parameters
     ----------
@@ -50,28 +51,30 @@ def preprocess_financial_statements(source: str, save_to: str) -> DataFrame:
             inferSchema=True
         ))
 
-    num_df = reduce(DataFrame.unionByName, num_dfs)
-    sub_df = reduce(DataFrame.unionByName, sub_dfs)
-
-    num_df = num_df \
-                .select("adsh", "tag", "ddate", "value") \
+    num_df = reduce(DataFrame.unionByName, num_dfs) \
                 .withColumn("ddate", to_date("ddate", "yyyyMMdd")) \
-                .withColumn("value", col("value").cast(DecimalType(28, 4)))
+                .select("adsh", "tag", "ddate", "value", "uom", "coreg", "segments")
+                
+    sub_df = reduce(DataFrame.unionByName, sub_dfs) \
+                .withColumn("filed", to_date("filed", "yyyyMMdd")) \
+                .select("adsh", "cik", "filed")
 
-    sub_df = sub_df \
-                .select("adsh", "cik", "name", "form", "period") \
-                .withColumn("cik", col("cik").cast(LongType())) \
-                .withColumn("period", to_date("period", "yyyyMMdd"))
+    joined_df = num_df.join(sub_df, on="adsh")
 
-    joined_df = sub_df \
-        .join(num_df, on="adsh", how="inner") \
-        .select("cik", "name", "tag", "ddate", "value")
+    filtered_df = joined_df.filter(
+        (col("coreg").isNull()) &
+        (col("segments").isNull()) &
+        (col("uom") == "USD") &
+        (col("value").isNotNull())
+    )
 
-    joined_df.coalesce(1).write.csv(save_to, header=True, mode="overwrite")
+    window = Window.partitionBy("cik", "tag", "ddate").orderBy(col("filed").desc())
+    ranked_df = filtered_df.withColumn("row_num", row_number().over(window))
+    deduped_df = ranked_df.filter(col("row_num") == 1)
 
-    for filename in os.listdir(save_to):
-        if filename.startswith("part-") and filename.endswith(".csv"):
-            
+    final_df = deduped_df.select("cik", "tag", "ddate", "value")
+
+    final_df.write.csv(save_to, header=True, mode="overwrite")
     
     print(f"Successfully wrote to {save_to}.")
 
