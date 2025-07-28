@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  spark:
+    build: .
+    container_name: sec-fundamentals-explorer
+    user: root
+    volumes:
+      - ./data:/workspace/data
+      - ./scripts:/workspace/scripts
+      - ./notebooks:/workspace/notebooks
+    environment:
+      - PYSPARK_PYTHON=python3
+      - HOME=/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]

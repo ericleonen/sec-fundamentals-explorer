@@ -1,0 +1,15 @@
+{
+  "name": "sec-fundamentals-explorer",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "spark",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "root",
+  "overrideCommand": false,
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

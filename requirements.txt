@@ -1,0 +1,7 @@
+pyspark==3.4.1
+pandas==2.1.4
+numpy==1.26.4
+requests==2.31.0
+jupyterlab==4.0.5
+ipykernel==6.25.2
+matplotlib==3.7.3
