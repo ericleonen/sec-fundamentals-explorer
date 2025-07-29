@@ -6,7 +6,6 @@ from pyspark.sql import SparkSession, DataFrame, Window
 import os
 from functools import reduce
 from pyspark.sql.functions import col, to_date, row_number
-import shutil
 
 FUNDAMENTAL_TAGS = [
     "Assets", "AssetsCurrent", "Liabilities", "LiabilitiesCurrent",
@@ -47,8 +46,6 @@ def preprocess_financial_statements(source: str, save_to: str):
                 .appName("preprocess_raw_financial_statements") \
                 .master("local[*]") \
                 .getOrCreate()
-    
-    num_dfs, sub_dfs = [], []
 
     print(f"Processing directories from {source}:")
     for index, dirname in enumerate(os.listdir(source)):
@@ -99,5 +96,5 @@ def preprocess_financial_statements(source: str, save_to: str):
 if __name__ == "__main__":
     preprocess_financial_statements(
         source="data/raw/",
-        save_to="data/preprocessed/"
+        save_to="data/preprocessed/financial_statements/"
     )
