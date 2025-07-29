@@ -93,6 +93,8 @@ def preprocess_financial_statements(source: str, save_to: str):
     
     print(f"Successfully wrote to {save_to}.")
 
+    spark.stop()
+
 if __name__ == "__main__":
     preprocess_financial_statements(
         source="data/raw/",
