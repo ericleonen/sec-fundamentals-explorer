@@ -24,8 +24,17 @@ def preprocess_raw_financial_statements(
 
     Parameters
     ----------
+    source_path: str
+        The path from which the data comes from.
+    target_path: str
+        The path where the processed data will be put.
+    industries_filepath: str
+        Path to industries config file.
+    test_mode: bool
+        Whether to run this method for only 2020 or all years.
 
     Returns
+    None
     """
     spark = SparkSession.builder \
         .appName("preprocess_raw_financial_statements") \
