@@ -1,102 +1,141 @@
-"""
-Script that preprocesses financial statement data from data/raw into a Parquet files.
-"""
-
-from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark.sql import SparkSession
 import os
-from functools import reduce
-from pyspark.sql.functions import col, to_date, row_number
+from pyspark.sql.functions import udf, col, row_number, desc, lit, substring, sum
+from pyspark.sql.window import Window
+from pyspark.sql.types import StringType
 
-FUNDAMENTAL_TAGS = [
-    "Assets", "AssetsCurrent", "Liabilities", "LiabilitiesCurrent",
-    "LongTermDebt", "LongTermDebtNoncurrent", "StockholdersEquity",
-    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-    "RetainedEarningsAccumulatedDeficit", "CashAndCashEquivalentsAtCarryingValue",
-    "AccountsReceivableNetCurrent", "InventoryNet",
-    "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
-    "CostOfRevenue", "CostOfGoodsAndServicesSold", "OperatingIncomeLoss",
-    "NetIncomeLoss", "EarningsBeforeInterestAndTaxes", "InterestExpense",
-    "ResearchAndDevelopmentExpense", "SellingGeneralAndAdministrativeExpense",
-    "NetCashProvidedByUsedInOperatingActivities",
-    "NetCashProvidedByUsedInInvestingActivities",
-    "NetCashProvidedByUsedInFinancingActivities",
-    "PaymentsToAcquirePropertyPlantAndEquipment", "DepreciationAndAmortization",
-    "WeightedAverageNumberOfDilutedSharesOutstanding", "EarningsPerShareDiluted",
-    "CommonStockDividendsPerShareDeclared"
-]
+METRIC_TAG_MAP = {
+    "profits": "NetIncomeLoss",
+    "assets": "Assets",
+    "stockholders_equity": "StockholdersEquity",
+    "capital_expenditures": "CapitalExpenditures"
+}
+METRIC_TAGS = list(METRIC_TAG_MAP.values())
 
-def preprocess_financial_statements(source: str, save_to: str):
+def preprocess_raw_financial_statements(
+        source_path: str, 
+        target_path: str, 
+        industries_filepath: str,
+        test_mode: bool = False
+):
     """
-    Preprocesses all num.txt and sub.txt from the given source directory into a flat CSV\. Columns
-    are cik, tag, ddate, and value.
+    Preprocesses raw SEC financial statements from the source into flat CSV data into the target.
+    Data is given per industry.
 
     Parameters
     ----------
-    source: str
-        Directory path where the raw financial statement data is.
-    save_to: str
-        Directory path where preprocesssed financial statement data will be placed.
-    
+
     Returns
-    -------
-    None
     """
-
     spark = SparkSession.builder \
-                .appName("preprocess_raw_financial_statements") \
-                .master("local[*]") \
-                .getOrCreate()
+        .appName("preprocess_raw_financial_statements") \
+        .master("local[*]") \
+        .getOrCreate()
+    
+    union_df = None
 
-    print(f"Processing directories from {source}:")
-    for index, dirname in enumerate(os.listdir(source)):
-        print(f" - {dirname}")
+    for dirname in os.listdir(source_path):
+        if test_mode and not dirname.startswith("2020"):
+            continue
+
+        print(f"Processing {dirname}:")
+        print(" > Reading...")
 
         num_df = spark.read.csv(
-            path=f"{source}{dirname}/num.txt",
+            path=os.path.join(source_path, dirname, "num.txt"),
             sep="\t",
             header=True,
             inferSchema=True
         ) \
-            .withColumn("ddate", to_date("ddate", "yyyyMMdd")) \
-            .select("adsh", "tag", "ddate", "value", "uom", "coreg", "segments")
+            .filter(col("version").startswith("us-gaap")) \
+            .filter(col("value").isNotNull()) \
+            .filter(col("segments").isNull()) \
+            .filter(col("coreg").isNull()) \
+            .filter(col("uom") == "USD") \
+            .filter(col("qtrs").isin([0, 4])) \
+            .filter(col("tag").isin(METRIC_TAGS)) \
+            .select("adsh", "tag", "ddate", "value")
 
         sub_df = spark.read.csv(
-            path=f"{source}{dirname}/sub.txt",
+            path=os.path.join(source_path, dirname, "sub.txt"),
             sep="\t",
             header=True,
             inferSchema=True
         ) \
-            .withColumn("filed", to_date("filed", "yyyyMMdd")) \
-            .select("adsh", "cik", "filed")
+            .filter(col("prevrpt") == 0) \
+            .filter(col("form") == "10-K") \
+            .filter(col("sic").isNotNull()) \
+            .withColumn("sic", col("sic").cast("int")) \
+            .select("adsh", "cik", "sic", "filed")
 
-        joined_df = num_df.join(sub_df, on="adsh")
-        print("   > Joined")
+        print(" > Joining...")
 
-        filtered_df = joined_df.filter(
-            (col("tag").isin(FUNDAMENTAL_TAGS)) &
-            (col("coreg").isNull()) &
-            (col("segments").isNull()) &
-            (col("uom") == "USD") &
-            (col("value").isNotNull())
-        )
-        print("   > Filtered")
+        joined_df = num_df.join(sub_df, on="adsh", how="inner").drop("adsh")
 
-        window = Window.partitionBy("cik", "tag", "ddate").orderBy(col("filed").desc())
-        ranked_df = filtered_df.withColumn("row_num", row_number().over(window))
-        deduped_df = ranked_df.filter(col("row_num") == 1)
-        print("   > Deduped")
+        print(" > Unioning...")
 
-        final_df = deduped_df.select("cik", "tag", "ddate", "value")
-        
-        final_df.write.mode("append" if index > 0 else "overwrite").csv(save_to, header=True)
-        print("   > Appended CSV")
+        union_df = joined_df if union_df is None else union_df.union(joined_df)
+
+    print("Deduping...")
+
+    window = Window.partitionBy("cik", "tag","ddate").orderBy(desc("filed"))
+    deduped_df = union_df.withColumn("row_num", row_number().over(window)) \
+                    .filter("row_num = 1").drop("row_num")
     
-    print(f"Successfully wrote to {save_to}.")
+    def industry_mapping_func(industries_filepath: str):
+        industries_map = {}
 
-    spark.stop()
+        with open(industries_filepath, "r") as industries_file:
+            current_industry = None
 
+            for line in industries_file:
+                line = line.strip()
+
+                if line.endswith(":"):
+                    current_industry = line[:-1]
+                    industries_map[current_industry] = []
+                elif len(line) > 0:
+                    min_sic, max_sic = map(int, line.split("-"))
+                    industries_map[current_industry].append((min_sic, max_sic))
+
+        def map_sic_to_industry(sic: int) -> str:
+            for industry, ranges in industries_map.items():
+                for min_sic, max_sic in ranges:
+                    if min_sic <= sic <= max_sic:
+                        return industry
+            return "Other"
+
+        return map_sic_to_industry
+
+    sic_mapper_udf = udf(
+        industry_mapping_func(industries_filepath), 
+        StringType()
+    )
+
+    print("Cleaning...")
+
+    final_df = deduped_df.withColumn("year", substring("ddate", 1, 4)) \
+                    .withColumn("industry", sic_mapper_udf("sic")) \
+                    .select("tag", "industry", "year", "value")
+
+    print("Writing...")
+    overwrite = True
+    for metric, tag in METRIC_TAG_MAP.items():
+        metric_df = final_df.filter(col("tag") == tag) \
+            .groupBy("year", "industry") \
+            .agg(sum("value").alias("value")) \
+            .withColumn("metric", lit(metric))
+        
+        metric_df \
+            .write.mode("overwrite" if overwrite else "append") \
+            .csv(target_path, header=True)
+        
+        overwrite = False
+        
 if __name__ == "__main__":
-    preprocess_financial_statements(
-        source="data/raw/",
-        save_to="data/preprocessed/financial_statements/"
+    preprocess_raw_financial_statements(
+        source_path="/workspace/data/raw/",
+        target_path="/workspace/data/preprocessed/",
+        industries_filepath="/workspace/data/fama-french-industries.txt",
+        test_mode=False
     )
